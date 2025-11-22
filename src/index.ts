@@ -25,24 +25,66 @@ app.use(cors({
 
 // Environment variables
 const TRADUORA_API_URL = process.env.TRADUORA_API_URL || '';
-const TRADUORA_API_TOKEN = process.env.TRADUORA_API_TOKEN || '';
+const TRADUORA_CLIENT_ID = process.env.TRADUORA_CLIENT_ID || '';
+const TRADUORA_CLIENT_SECRET = process.env.TRADUORA_CLIENT_SECRET || '';
 const PORT = process.env.PORT || 3002;
 
+// OAuth2 token cache
+let accessToken: string | null = null;
+let tokenExpiry: number = 0;
+
 // Warn if configuration is missing
-if (!TRADUORA_API_URL || !TRADUORA_API_TOKEN) {
-  console.warn('⚠️  WARNING: TRADUORA_API_URL or TRADUORA_API_TOKEN not set!');
+if (!TRADUORA_API_URL || !TRADUORA_CLIENT_ID || !TRADUORA_CLIENT_SECRET) {
+  console.warn('⚠️  WARNING: TRADUORA_API_URL, TRADUORA_CLIENT_ID, or TRADUORA_CLIENT_SECRET not set!');
   console.warn('⚠️  Server will start but Traduora tools will not work until configured.');
 }
 
-// Create Axios instance for Traduora API
-const traduoraClient: AxiosInstance = axios.create({
-  baseURL: TRADUORA_API_URL,
-  headers: {
-    'Authorization': `Bearer ${TRADUORA_API_TOKEN}`,
-    'Content-Type': 'application/json'
-  },
-  timeout: 30000
-});
+/**
+ * Get OAuth2 access token using client credentials
+ */
+async function getAccessToken(): Promise<string> {
+  // Return cached token if still valid
+  if (accessToken && Date.now() < tokenExpiry) {
+    return accessToken;
+  }
+
+  try {
+    const response = await axios.post(`${TRADUORA_API_URL}/api/v1/auth/token`, {
+      grant_type: 'client_credentials',
+      client_id: TRADUORA_CLIENT_ID,
+      client_secret: TRADUORA_CLIENT_SECRET
+    }, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    accessToken = response.data.access_token;
+    // Set expiry to 1 hour (default Traduora token expiry) minus 5 minutes buffer
+    tokenExpiry = Date.now() + (55 * 60 * 1000);
+    
+    return accessToken;
+  } catch (error: any) {
+    console.error('Failed to get access token:', error.response?.data || error.message);
+    throw new Error('Failed to authenticate with Traduora API');
+  }
+}
+
+/**
+ * Create authenticated Axios client
+ */
+async function getTraduoraClient(): Promise<AxiosInstance> {
+  const token = await getAccessToken();
+  
+  return axios.create({
+    baseURL: `${TRADUORA_API_URL}/api/v1`,
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    timeout: 30000
+  });
+}
 
 /**
  * Helper function to handle Traduora API errors
@@ -73,7 +115,7 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'traduora-mcp-server',
-    traduoraConfigured: !!(TRADUORA_API_URL && TRADUORA_API_TOKEN),
+    traduoraConfigured: !!(TRADUORA_API_URL && TRADUORA_CLIENT_ID && TRADUORA_CLIENT_SECRET),
     traduoraUrl: TRADUORA_API_URL || 'not configured',
     version: '1.0.0',
     timestamp: new Date().toISOString()
@@ -126,17 +168,18 @@ app.post('/mcp', async (req, res) => {
       },
       async ({ projectId, languageCode }) => {
         try {
-          if (!TRADUORA_API_URL || !TRADUORA_API_TOKEN) {
+          if (!TRADUORA_API_URL || !TRADUORA_CLIENT_ID || !TRADUORA_CLIENT_SECRET) {
             return {
               content: [{
                 type: 'text',
-                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL and TRADUORA_API_TOKEN.'
+                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL, TRADUORA_CLIENT_ID, and TRADUORA_CLIENT_SECRET.'
               }],
               isError: true
             };
           }
 
-          const response = await traduoraClient.get(`/api/v1/projects/${projectId}/translations/${languageCode}`);
+          const client = await getTraduoraClient();
+          const response = await client.get(`/projects/${projectId}/translations/${languageCode}`);
           const translations = response.data;
 
           return {
@@ -165,17 +208,18 @@ app.post('/mcp', async (req, res) => {
       {},
       async () => {
         try {
-          if (!TRADUORA_API_URL || !TRADUORA_API_TOKEN) {
+          if (!TRADUORA_API_URL || !TRADUORA_CLIENT_ID || !TRADUORA_CLIENT_SECRET) {
             return {
               content: [{
                 type: 'text',
-                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL and TRADUORA_API_TOKEN.'
+                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL, TRADUORA_CLIENT_ID, and TRADUORA_CLIENT_SECRET.'
               }],
               isError: true
             };
           }
 
-          const response = await traduoraClient.get('/api/v1/projects');
+          const client = await getTraduoraClient();
+          const response = await client.get('/projects');
           const projects = response.data;
 
           return {
@@ -206,17 +250,18 @@ app.post('/mcp', async (req, res) => {
       },
       async ({ projectId }) => {
         try {
-          if (!TRADUORA_API_URL || !TRADUORA_API_TOKEN) {
+          if (!TRADUORA_API_URL || !TRADUORA_CLIENT_ID || !TRADUORA_CLIENT_SECRET) {
             return {
               content: [{
                 type: 'text',
-                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL and TRADUORA_API_TOKEN.'
+                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL, TRADUORA_CLIENT_ID, and TRADUORA_CLIENT_SECRET.'
               }],
               isError: true
             };
           }
 
-          const response = await traduoraClient.get(`/api/v1/projects/${projectId}/languages`);
+          const client = await getTraduoraClient();
+          const response = await client.get(`/projects/${projectId}/languages`);
           const languages = response.data;
 
           return {
@@ -249,17 +294,18 @@ app.post('/mcp', async (req, res) => {
       },
       async ({ projectId, key, description }) => {
         try {
-          if (!TRADUORA_API_URL || !TRADUORA_API_TOKEN) {
+          if (!TRADUORA_API_URL || !TRADUORA_CLIENT_ID || !TRADUORA_CLIENT_SECRET) {
             return {
               content: [{
                 type: 'text',
-                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL and TRADUORA_API_TOKEN.'
+                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL, TRADUORA_CLIENT_ID, and TRADUORA_CLIENT_SECRET.'
               }],
               isError: true
             };
           }
 
-          const response = await traduoraClient.post(`/api/v1/projects/${projectId}/keys`, {
+          const client = await getTraduoraClient();
+          const response = await client.post(`/projects/${projectId}/keys`, {
             key,
             description: description || ''
           });
@@ -295,18 +341,19 @@ app.post('/mcp', async (req, res) => {
       },
       async ({ projectId, key, languageCode, value }) => {
         try {
-          if (!TRADUORA_API_URL || !TRADUORA_API_TOKEN) {
+          if (!TRADUORA_API_URL || !TRADUORA_CLIENT_ID || !TRADUORA_CLIENT_SECRET) {
             return {
               content: [{
                 type: 'text',
-                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL and TRADUORA_API_TOKEN.'
+                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL, TRADUORA_CLIENT_ID, and TRADUORA_CLIENT_SECRET.'
               }],
               isError: true
             };
           }
 
-          const response = await traduoraClient.put(
-            `/api/v1/projects/${projectId}/translations/${languageCode}/${key}`,
+          const client = await getTraduoraClient();
+          const response = await client.put(
+            `/projects/${projectId}/translations/${languageCode}/${key}`,
             { value }
           );
 
@@ -339,17 +386,18 @@ app.post('/mcp', async (req, res) => {
       },
       async ({ projectId, languageCode }) => {
         try {
-          if (!TRADUORA_API_URL || !TRADUORA_API_TOKEN) {
+          if (!TRADUORA_API_URL || !TRADUORA_CLIENT_ID || !TRADUORA_CLIENT_SECRET) {
             return {
               content: [{
                 type: 'text',
-                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL and TRADUORA_API_TOKEN.'
+                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL, TRADUORA_CLIENT_ID, and TRADUORA_CLIENT_SECRET.'
               }],
               isError: true
             };
           }
 
-          const response = await traduoraClient.get(`/api/v1/projects/${projectId}/translations/${languageCode}`);
+          const client = await getTraduoraClient();
+          const response = await client.get(`/projects/${projectId}/translations/${languageCode}`);
           const translations = response.data;
 
           // Convert to flat JSON object format
@@ -395,16 +443,17 @@ app.post('/mcp', async (req, res) => {
       },
       async ({ projectId, languageCode, translations }) => {
         try {
-          if (!TRADUORA_API_URL || !TRADUORA_API_TOKEN) {
+          if (!TRADUORA_API_URL || !TRADUORA_CLIENT_ID || !TRADUORA_CLIENT_SECRET) {
             return {
               content: [{
                 type: 'text',
-                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL and TRADUORA_API_TOKEN.'
+                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL, TRADUORA_CLIENT_ID, and TRADUORA_CLIENT_SECRET.'
               }],
               isError: true
             };
           }
 
+          const client = await getTraduoraClient();
           const results = {
             created: [] as string[],
             updated: [] as string[],
@@ -415,22 +464,26 @@ app.post('/mcp', async (req, res) => {
           for (const [key, value] of Object.entries(translations)) {
             try {
               // Try to update first
-              await traduoraClient.put(
-                `/api/v1/projects/${projectId}/translations/${languageCode}/${key}`,
+              await client.put(
+                `/projects/${projectId}/translations/${languageCode}/${key}`,
                 { value }
               );
               results.updated.push(key);
             } catch (error: any) {
               // If update fails, try creating the key first, then update
-              try {
-                await traduoraClient.post(`/api/v1/projects/${projectId}/keys`, { key });
-                await traduoraClient.put(
-                  `/api/v1/projects/${projectId}/translations/${languageCode}/${key}`,
-                  { value }
-                );
-                results.created.push(key);
-              } catch (createError: any) {
-                results.errors.push(`${key}: ${createError.message}`);
+              if (error.response?.status === 404) {
+                try {
+                  await client.post(`/projects/${projectId}/keys`, { key });
+                  await client.put(
+                    `/projects/${projectId}/translations/${languageCode}/${key}`,
+                    { value }
+                  );
+                  results.created.push(key);
+                } catch (createError: any) {
+                  results.errors.push(`${key}: ${createError.response?.data?.error?.message || createError.message}`);
+                }
+              } else {
+                results.errors.push(`${key}: ${error.response?.data?.error?.message || error.message}`);
               }
             }
           }
@@ -472,16 +525,17 @@ ${results.errors.length > 0 ? `\nErrors:\n${results.errors.join('\n')}` : ''}`;
       },
       async ({ projectId, languageCode, translations }) => {
         try {
-          if (!TRADUORA_API_URL || !TRADUORA_API_TOKEN) {
+          if (!TRADUORA_API_URL || !TRADUORA_CLIENT_ID || !TRADUORA_CLIENT_SECRET) {
             return {
               content: [{
                 type: 'text',
-                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL and TRADUORA_API_TOKEN.'
+                text: '❌ Traduora API not configured. Please set TRADUORA_API_URL, TRADUORA_CLIENT_ID, and TRADUORA_CLIENT_SECRET.'
               }],
               isError: true
             };
           }
 
+          const client = await getTraduoraClient();
           const results = {
             updated: [] as string[],
             errors: [] as string[]
@@ -490,13 +544,13 @@ ${results.errors.length > 0 ? `\nErrors:\n${results.errors.join('\n')}` : ''}`;
           // Process each translation
           for (const [key, value] of Object.entries(translations)) {
             try {
-              await traduoraClient.put(
-                `/api/v1/projects/${projectId}/translations/${languageCode}/${key}`,
+              await client.put(
+                `/projects/${projectId}/translations/${languageCode}/${key}`,
                 { value }
               );
               results.updated.push(key);
             } catch (error: any) {
-              results.errors.push(`${key}: ${error.message}`);
+              results.errors.push(`${key}: ${error.response?.data?.error?.message || error.message}`);
             }
           }
 
@@ -557,7 +611,8 @@ app.listen(Number(PORT), HOST, () => {
   console.log('');
   console.log('⚙️  Configuration:');
   console.log(`   Traduora URL: ${TRADUORA_API_URL || '⚠️  NOT CONFIGURED'}`);
-  console.log(`   API Token: ${TRADUORA_API_TOKEN ? '✅ Configured' : '⚠️  NOT CONFIGURED'}`);
+  console.log(`   Client ID: ${TRADUORA_CLIENT_ID ? '✅ Configured' : '⚠️  NOT CONFIGURED'}`);
+  console.log(`   Client Secret: ${TRADUORA_CLIENT_SECRET ? '✅ Configured' : '⚠️  NOT CONFIGURED'}`);
   console.log('');
   console.log('🛠️  Available Tools:');
   console.log('   - get_translations');
